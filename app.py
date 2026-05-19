@@ -1,73 +1,26 @@
-from flask import Flask, render_template, request, jsonify
+﻿from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
-import hashlib
-import os
+import hashlib, os, json, requests
 
 app = Flask(__name__)
-
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///lead_intelligence.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///lead_intelligence.db").replace("postgres://", "postgresql://")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
 db = SQLAlchemy(app)
 
-TARGET_INDUSTRIES = [
-    "hvac",
-    "electrician",
-    "electrical contractor",
-    "roofing",
-    "plumbing",
-    "restoration",
-    "remodeling",
-    "solar",
-    "med spa",
-    "dental"
-]
+BOOKING_LINK = os.getenv("BOOKING_LINK", "https://calendly.com/your-link/demo")
+MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "")
+TWILIO_SID = os.getenv("TWILIO_SID", "")
+TWILIO_TOKEN = os.getenv("TWILIO_TOKEN", "")
+TWILIO_FROM = os.getenv("TWILIO_FROM", "")
 
-HIGH_SIGNAL_KEYWORDS = [
-    "need dispatcher",
-    "hiring dispatcher",
-    "office admin",
-    "appointment setter",
-    "csr",
-    "customer service representative",
-    "sales coordinator",
-    "scheduler",
-    "missed calls",
-    "never called back",
-    "hard to reach",
-    "bad communication",
-    "slow response",
-    "overwhelmed",
-    "too many leads",
-    "need help scheduling",
-    "follow up",
-    "lead tracking",
-    "crm",
-    "automation",
-    "hiring immediately",
-    "urgent"
-]
-
-MEDIUM_SIGNAL_KEYWORDS = [
-    "hiring",
-    "growing",
-    "expanding",
-    "busy",
-    "booking",
-    "calls",
-    "leads",
-    "estimate",
-    "quote",
-    "appointments",
-    "reviews",
-    "website",
-    "forms"
-]
+TARGET_INDUSTRIES = ["hvac","plumbing","roofing","electrician","electrical contractor","restoration","remodeling","solar","med spa","dental"]
+HIGH_SIGNALS = ["missed calls","never called back","slow response","hard to reach","hiring dispatcher","dispatcher","scheduler","appointment setter","csr","too many leads","follow up","crm","urgent","need help scheduling"]
+MEDIUM_SIGNALS = ["hiring","busy","growing","calls","leads","quote","estimate","appointments","reviews","website","forms","booking"]
 
 class Lead(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    lead_id = db.Column(db.String(100), unique=True)
+    lead_id = db.Column(db.String(120), unique=True)
     company = db.Column(db.String(200))
     industry = db.Column(db.String(120))
     contact_name = db.Column(db.String(200))
@@ -85,338 +38,222 @@ class Lead(db.Model):
     recommended_solution = db.Column(db.Text)
     status = db.Column(db.String(100), default="New")
     notes = db.Column(db.Text)
+    estimated_job_value = db.Column(db.Float, default=0)
+    missed_leads_per_month = db.Column(db.Integer, default=0)
+    close_rate = db.Column(db.Float, default=0.25)
+    projected_monthly_recovered = db.Column(db.Float, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-class Activity(db.Model):
+class Outreach(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    event_type = db.Column(db.String(120))
-    details = db.Column(db.Text)
+    lead_id = db.Column(db.String(120))
+    channel = db.Column(db.String(50))
+    subject = db.Column(db.String(300))
+    message = db.Column(db.Text)
+    status = db.Column(db.String(80), default="drafted")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-def make_lead_id(company, website, phone, email):
-    raw = f"{company}|{website}|{phone}|{email}"
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+def lead_hash(company, website, phone, email):
+    return hashlib.md5(f"{company}|{website}|{phone}|{email}".encode()).hexdigest()
 
 def score_lead(industry, signal_text, website=""):
     text = f"{industry} {signal_text} {website}".lower()
-    score = 10
-    reasons = []
+    score, reasons = 10, []
 
-    for industry_name in TARGET_INDUSTRIES:
-        if industry_name in text:
+    for x in TARGET_INDUSTRIES:
+        if x in text:
             score += 12
-            reasons.append(f"Target industry match: {industry_name}")
+            reasons.append(f"Target contractor/service industry: {x}")
 
-    for keyword in HIGH_SIGNAL_KEYWORDS:
-        if keyword in text:
+    for x in HIGH_SIGNALS:
+        if x in text:
             score += 14
-            reasons.append(f"High-intent signal: {keyword}")
+            reasons.append(f"High buying signal: {x}")
 
-    for keyword in MEDIUM_SIGNAL_KEYWORDS:
-        if keyword in text:
+    for x in MEDIUM_SIGNALS:
+        if x in text:
             score += 6
-            reasons.append(f"Medium signal: {keyword}")
+            reasons.append(f"Medium buying signal: {x}")
 
-    if "never called back" in text or "hard to reach" in text or "slow response" in text:
+    if any(x in text for x in ["missed calls","never called back","slow response","hard to reach"]):
         score += 18
-        reasons.append("Customer communication problem detected")
+        reasons.append("Customer communication/revenue leak detected")
 
-    if "dispatcher" in text or "scheduler" in text or "appointment setter" in text:
+    if any(x in text for x in ["dispatcher","scheduler","appointment setter","csr"]):
         score += 16
-        reasons.append("Hiring for roles automation can reduce")
+        reasons.append("Hiring for work automation can reduce")
 
-    if "crm" not in text and ("leads" in text or "appointments" in text or "calls" in text):
-        score += 8
-        reasons.append("Possible missing CRM / lead tracking")
-
-    if score > 100:
-        score = 100
+    score = min(score, 100)
 
     if score >= 75:
         priority = "High"
         pitch = "Lead with missed revenue, faster response, automated follow-up, and booked-job recovery."
-        solution = "AI lead follow-up system, missed-call automation, CRM pipeline, Gmail/SMS follow-up, and dashboard reporting."
+        solution = "Missed-call text back, lead capture, SMS/email follow-up, calendar booking, CRM pipeline, and ROI dashboard."
     elif score >= 45:
         priority = "Medium"
-        pitch = "Lead with organization, follow-up, and operational efficiency."
-        solution = "Simple CRM, automated reminders, lead tracking, and follow-up workflows."
+        pitch = "Lead with organization, follow-up, and workflow efficiency."
+        solution = "Lead tracking, reminders, booking workflow, and automated follow-up."
     else:
         priority = "Low"
-        pitch = "Nurture lead. Not enough urgent pain yet."
+        pitch = "Nurture lead until stronger pain appears."
         solution = "Basic monitoring and future automation audit."
 
-    pain_summary = "; ".join(reasons) if reasons else "No strong automation pain detected yet."
+    return score, priority, "; ".join(reasons) or "No strong pain detected yet.", pitch, solution
 
-    return score, priority, pain_summary, pitch, solution
+def calc_roi(job_value, missed, close_rate):
+    try:
+        return round(float(job_value) * int(missed) * float(close_rate), 2)
+    except:
+        return 0
 
-def seed_leads():
-    examples = [
-        {
-            "company": "Coastal HVAC Pros",
-            "industry": "HVAC",
-            "city": "Virginia Beach",
-            "state": "VA",
-            "source": "Demo Signal",
-            "signal_text": "Hiring dispatcher and customer service representative. Reviews mention slow response and hard to reach during busy season.",
-            "website": "https://example.com"
-        },
-        {
-            "company": "Tidewater Plumbing Group",
-            "industry": "Plumbing",
-            "city": "Norfolk",
-            "state": "VA",
-            "source": "Demo Signal",
-            "signal_text": "Busy plumbing company hiring scheduler. Needs help managing calls, estimates, appointments, and follow up.",
-            "website": "https://example.com"
-        },
-        {
-            "company": "Lone Star Electrical Services",
-            "industry": "Electrical Contractor",
-            "city": "Dallas",
-            "state": "TX",
-            "source": "Demo Signal",
-            "signal_text": "Growing electrical contractor hiring office admin and sales coordinator. Many leads and quote requests.",
-            "website": "https://example.com"
-        }
-    ]
+def build_messages(lead):
+    booking = BOOKING_LINK
+    subject = f"Quick idea to help {lead.company} capture more booked jobs"
+    email = f"""Hi {lead.contact_name or 'there'},
 
-    for item in examples:
-        lead_id = make_lead_id(item["company"], item["website"], "", "")
+I noticed {lead.company} may have a follow-up or lead-response opportunity.
 
-        if not Lead.query.filter_by(lead_id=lead_id).first():
-            score, priority, pain_summary, pitch, solution = score_lead(
-                item["industry"],
-                item["signal_text"],
-                item["website"]
-            )
+I build AI workflow systems for {lead.industry or 'contractor'} companies that help capture missed calls, organize leads, automate follow-up, and turn more inquiries into booked appointments.
 
-            lead = Lead(
-                lead_id=lead_id,
-                company=item["company"],
-                industry=item["industry"],
-                contact_name="",
-                phone="",
-                email="",
-                website=item["website"],
-                city=item["city"],
-                state=item["state"],
-                source=item["source"],
-                signal_text=item["signal_text"],
-                score=score,
-                priority=priority,
-                pain_summary=pain_summary,
-                recommended_pitch=pitch,
-                recommended_solution=solution,
-                status="New",
-                notes="Seed lead for demo"
-            )
+Based on the signals I found, the opportunity looks like:
+{lead.pain_summary}
 
-            db.session.add(lead)
+A simple system could help with:
+- missed-call text back
+- automated email/SMS follow-up
+- lead scoring
+- calendar booking
+- ROI tracking
 
-    db.session.commit()
+Would it make sense to show you a quick demo?
 
-@app.before_request
-def setup():
-    db.create_all()
-    if Lead.query.count() == 0:
-        seed_leads()
-
-@app.route("/")
-def index():
-    leads = Lead.query.order_by(Lead.score.desc(), Lead.created_at.desc()).all()
-    activities = Activity.query.order_by(Activity.created_at.desc()).limit(10).all()
-    return render_template("index.html", leads=leads, activities=activities)
-
-@app.route("/api/leads")
-def api_leads():
-    industry = request.args.get("industry", "").lower()
-    priority = request.args.get("priority", "").lower()
-
-    query = Lead.query
-
-    if industry:
-        query = query.filter(Lead.industry.ilike(f"%{industry}%"))
-
-    if priority:
-        query = query.filter(Lead.priority.ilike(f"%{priority}%"))
-
-    leads = query.order_by(Lead.score.desc()).all()
-
-    return jsonify({
-        "count": len(leads),
-        "leads": [
-            {
-                "id": lead.lead_id,
-                "company": lead.company,
-                "industry": lead.industry,
-                "contact_name": lead.contact_name,
-                "phone": lead.phone,
-                "email": lead.email,
-                "website": lead.website,
-                "city": lead.city,
-                "state": lead.state,
-                "source": lead.source,
-                "signal_text": lead.signal_text,
-                "score": lead.score,
-                "priority": lead.priority,
-                "pain_summary": lead.pain_summary,
-                "recommended_pitch": lead.recommended_pitch,
-                "recommended_solution": lead.recommended_solution,
-                "status": lead.status,
-                "notes": lead.notes
-            }
-            for lead in leads
-        ]
-    })
-
-@app.route("/api/score", methods=["POST"])
-def api_score():
-    data = request.get_json(silent=True) or {}
-
-    score, priority, pain_summary, pitch, solution = score_lead(
-        data.get("industry", ""),
-        data.get("signal_text", ""),
-        data.get("website", "")
-    )
-
-    return jsonify({
-        "score": score,
-        "priority": priority,
-        "pain_summary": pain_summary,
-        "recommended_pitch": pitch,
-        "recommended_solution": solution
-    })
-
-@app.route("/api/add-lead", methods=["POST"])
-def api_add_lead():
-    data = request.get_json(silent=True) or {}
-
-    company = data.get("company", "Unknown Company")
-    website = data.get("website", "")
-    phone = data.get("phone", "")
-    email = data.get("email", "")
-
-    lead_id = make_lead_id(company, website, phone, email)
-
-    existing = Lead.query.filter_by(lead_id=lead_id).first()
-    if existing:
-        return jsonify({
-            "status": "duplicate",
-            "lead_id": lead_id
-        })
-
-    score, priority, pain_summary, pitch, solution = score_lead(
-        data.get("industry", ""),
-        data.get("signal_text", ""),
-        website
-    )
-
-    lead = Lead(
-        lead_id=lead_id,
-        company=company,
-        industry=data.get("industry", ""),
-        contact_name=data.get("contact_name", ""),
-        phone=phone,
-        email=email,
-        website=website,
-        city=data.get("city", ""),
-        state=data.get("state", ""),
-        source=data.get("source", "Manual/API"),
-        signal_text=data.get("signal_text", ""),
-        score=score,
-        priority=priority,
-        pain_summary=pain_summary,
-        recommended_pitch=pitch,
-        recommended_solution=solution,
-        status=data.get("status", "New"),
-        notes=data.get("notes", "")
-    )
-
-    db.session.add(lead)
-
-    activity = Activity(
-        event_type="lead_added",
-        details=f"Added {company} with score {score} and priority {priority}"
-    )
-
-    db.session.add(activity)
-    db.session.commit()
-
-    return jsonify({
-        "status": "saved",
-        "lead_id": lead_id,
-        "score": score,
-        "priority": priority,
-        "pain_summary": pain_summary,
-        "recommended_pitch": pitch,
-        "recommended_solution": solution
-    })
-
-@app.route("/api/update-lead", methods=["POST"])
-def api_update_lead():
-    data = request.get_json(silent=True) or {}
-    lead = Lead.query.filter_by(lead_id=data.get("id")).first()
-
-    if not lead:
-        return jsonify({"status": "not_found"}), 404
-
-    lead.status = data.get("status", lead.status)
-    lead.notes = data.get("notes", lead.notes)
-
-    db.session.add(Activity(
-        event_type="lead_updated",
-        details=f"Updated {lead.company} to {lead.status}"
-    ))
-
-    db.session.commit()
-
-    return jsonify({"status": "updated"})
-
-@app.route("/api/outreach-draft", methods=["POST"])
-def api_outreach_draft():
-    data = request.get_json(silent=True) or {}
-
-    company = data.get("company", "your company")
-    industry = data.get("industry", "service business")
-    pain = data.get("pain_summary", "missed leads and slow follow-up")
-
-    subject = f"Quick idea to help {company} capture more booked jobs"
-
-    body = f"""Hi,
-
-I noticed {company} may have an opportunity to tighten up lead follow-up and customer communication.
-
-I build AI-powered workflow systems for {industry} companies that help reduce missed leads, organize follow-up, and turn more calls/forms into booked appointments.
-
-The main thing I focus on is simple:
-identify operational revenue leaks and automate them.
-
-Based on the signals I found, the opportunity may be:
-{pain}
-
-Would it make sense to show you a quick example of how this could work for your business?
+Book here: {booking}
 
 Best,
 Matthew Jolley
 AI Automation Engineer
-https://github.com/jolleyleads
 """
+    sms = f"Hi {lead.contact_name or ''}, this is Matthew. I help {lead.industry or 'contractor'} companies capture missed leads with AI follow-up, SMS/email automation, and booking workflows. Quick demo? {booking}"
+    return subject, email, sms
 
-    return jsonify({
-        "subject": subject,
-        "body": body,
-        "mode": "draft_only"
-    })
+def send_sms_if_configured(to, body):
+    if not all([TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM, to]):
+        return {"sent": False, "reason": "Twilio not configured; SMS saved as draft."}
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json"
+    r = requests.post(url, data={"From": TWILIO_FROM, "To": to, "Body": body}, auth=(TWILIO_SID, TWILIO_TOKEN), timeout=15)
+    return {"sent": r.ok, "status_code": r.status_code, "response": r.text[:300]}
+
+@app.before_request
+def setup():
+    db.create_all()
+
+@app.route("/")
+def index():
+    leads = Lead.query.order_by(Lead.score.desc(), Lead.created_at.desc()).all()
+    outreach = Outreach.query.order_by(Outreach.created_at.desc()).limit(20).all()
+    total_pipeline = sum([x.projected_monthly_recovered or 0 for x in leads])
+    return render_template("index.html", leads=leads, outreach=outreach, total_pipeline=total_pipeline, booking_link=BOOKING_LINK)
 
 @app.route("/api/health")
-def api_health():
-    return jsonify({
-        "status": "AI Lead Intelligence Command Center online",
-        "leads_endpoint": "/api/leads",
-        "score_endpoint": "/api/score",
-        "add_lead_endpoint": "/api/add-lead",
-        "outreach_endpoint": "/api/outreach-draft"
-    })
+def health():
+    return jsonify({"status": "online", "system": "Contractor AI Lead Intelligence + Outreach + ROI Command Center"})
+
+@app.route("/api/leads")
+def api_leads():
+    leads = Lead.query.order_by(Lead.score.desc()).all()
+    return jsonify({"count": len(leads), "leads": [lead_to_dict(x) for x in leads]})
+
+def lead_to_dict(x):
+    return {
+        "id": x.lead_id, "company": x.company, "industry": x.industry,
+        "contact_name": x.contact_name, "phone": x.phone, "email": x.email,
+        "website": x.website, "city": x.city, "state": x.state,
+        "source": x.source, "signal_text": x.signal_text, "score": x.score,
+        "priority": x.priority, "pain_summary": x.pain_summary,
+        "recommended_pitch": x.recommended_pitch,
+        "recommended_solution": x.recommended_solution,
+        "status": x.status, "notes": x.notes,
+        "estimated_job_value": x.estimated_job_value,
+        "missed_leads_per_month": x.missed_leads_per_month,
+        "close_rate": x.close_rate,
+        "projected_monthly_recovered": x.projected_monthly_recovered
+    }
+
+@app.route("/api/add-lead", methods=["POST"])
+def add_lead():
+    data = request.get_json(silent=True) or {}
+    company = data.get("company", "Unknown Company")
+    website = data.get("website", "")
+    phone = data.get("phone", "")
+    email = data.get("email", "")
+    lead_id = lead_hash(company, website, phone, email)
+
+    existing = Lead.query.filter_by(lead_id=lead_id).first()
+    if existing:
+        return jsonify({"status": "duplicate", "lead": lead_to_dict(existing)})
+
+    score, priority, pain, pitch, solution = score_lead(data.get("industry",""), data.get("signal_text",""), website)
+    roi = calc_roi(data.get("estimated_job_value", 0), data.get("missed_leads_per_month", 0), data.get("close_rate", 0.25))
+
+    lead = Lead(
+        lead_id=lead_id, company=company, industry=data.get("industry",""),
+        contact_name=data.get("contact_name",""), phone=phone, email=email,
+        website=website, city=data.get("city",""), state=data.get("state",""),
+        source=data.get("source","Manual/API"), signal_text=data.get("signal_text",""),
+        score=score, priority=priority, pain_summary=pain,
+        recommended_pitch=pitch, recommended_solution=solution,
+        estimated_job_value=float(data.get("estimated_job_value") or 0),
+        missed_leads_per_month=int(data.get("missed_leads_per_month") or 0),
+        close_rate=float(data.get("close_rate") or 0.25),
+        projected_monthly_recovered=roi,
+        status="New", notes=data.get("notes","")
+    )
+    db.session.add(lead)
+    db.session.commit()
+
+    if MAKE_WEBHOOK_URL:
+        try:
+            requests.post(MAKE_WEBHOOK_URL, json=lead_to_dict(lead), timeout=10)
+        except Exception:
+            pass
+
+    return jsonify({"status": "saved", "lead": lead_to_dict(lead)})
+
+@app.route("/api/outreach/<lead_id>", methods=["POST"])
+def outreach(lead_id):
+    lead = Lead.query.filter_by(lead_id=lead_id).first()
+    if not lead:
+        return jsonify({"status": "not_found"}), 404
+
+    subject, email_body, sms_body = build_messages(lead)
+
+    db.session.add(Outreach(lead_id=lead.lead_id, channel="email", subject=subject, message=email_body, status="drafted"))
+    db.session.add(Outreach(lead_id=lead.lead_id, channel="sms", subject="", message=sms_body, status="drafted"))
+    db.session.commit()
+
+    return jsonify({"status": "drafted", "email_subject": subject, "email_body": email_body, "sms_body": sms_body})
+
+@app.route("/api/send-sms/<lead_id>", methods=["POST"])
+def send_sms(lead_id):
+    lead = Lead.query.filter_by(lead_id=lead_id).first()
+    if not lead:
+        return jsonify({"status": "not_found"}), 404
+    _, _, sms_body = build_messages(lead)
+    result = send_sms_if_configured(lead.phone, sms_body)
+    db.session.add(Outreach(lead_id=lead.lead_id, channel="sms", message=sms_body, status="sent" if result.get("sent") else "drafted"))
+    db.session.commit()
+    return jsonify(result)
+
+@app.route("/api/update-lead", methods=["POST"])
+def update_lead():
+    data = request.get_json(silent=True) or {}
+    lead = Lead.query.filter_by(lead_id=data.get("id")).first()
+    if not lead:
+        return jsonify({"status": "not_found"}), 404
+    lead.status = data.get("status", lead.status)
+    lead.notes = data.get("notes", lead.notes)
+    db.session.commit()
+    return jsonify({"status": "updated", "lead": lead_to_dict(lead)})
 
 if __name__ == "__main__":
     app.run(debug=True)

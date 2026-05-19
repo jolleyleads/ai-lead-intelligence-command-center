@@ -1,131 +1,125 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html>
 <head>
-    <title>AI Lead Intelligence Command Center</title>
+    <title>Contractor AI Command Center</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <aside class="sidebar">
-        <h2>AI Lead Intel</h2>
-        <a href="/">Dashboard</a>
-        <a href="/api/leads" target="_blank">Leads API</a>
-        <a href="/api/health" target="_blank">Health API</a>
-    </aside>
+<aside>
+    <h2>AI Command Center</h2>
+    <a href="/">Dashboard</a>
+    <a href="/api/leads" target="_blank">Leads API</a>
+    <a href="/api/health" target="_blank">Health API</a>
+</aside>
 
-    <main>
-        <section class="hero">
-            <h1>AI Lead Intelligence Command Center</h1>
-            <p>Signal-based prospecting engine that scores businesses showing automation pain, revenue leaks, hiring strain, and workflow bottlenecks.</p>
-        </section>
+<main>
+    <section class="hero">
+        <h1>Contractor AI Lead Intelligence Command Center</h1>
+        <p>Finds contractor leads with revenue leaks, scores them, drafts outreach, tracks ROI, and helps book demos.</p>
+    </section>
 
-        <section class="grid">
-            <div class="card">
-                <h3>Total Leads</h3>
-                <p class="metric">{{ leads|length }}</p>
+    <section class="grid">
+        <div class="card"><h3>Total Leads</h3><p class="metric">{{ leads|length }}</p></div>
+        <div class="card"><h3>High Priority</h3><p class="metric">{{ leads|selectattr("priority","equalto","High")|list|length }}</p></div>
+        <div class="card"><h3>Projected Monthly Recovery</h3><p class="metric">${{ "{:,.0f}".format(total_pipeline) }}</p></div>
+    </section>
+
+    <section class="panel">
+        <h2>Add / Score Contractor Lead</h2>
+        <div class="form-grid">
+            <input id="company" placeholder="Company">
+            <input id="industry" placeholder="Industry: HVAC, Plumbing, Roofing">
+            <input id="contact_name" placeholder="Contact Name">
+            <input id="phone" placeholder="Phone">
+            <input id="email" placeholder="Email">
+            <input id="website" placeholder="Website">
+            <input id="city" placeholder="City">
+            <input id="state" placeholder="State">
+            <input id="source" placeholder="Source: review, job post, scraped lead">
+            <input id="estimated_job_value" placeholder="Avg Job Value e.g. 1200">
+            <input id="missed_leads_per_month" placeholder="Missed Leads / Month e.g. 20">
+            <input id="close_rate" placeholder="Close Rate e.g. 0.25">
+        </div>
+        <textarea id="signal_text" placeholder="Paste pain signal: reviews say slow response, hiring dispatcher, missed calls, needs scheduler, too many leads..."></textarea>
+        <button onclick="addLead()">Save & Score Lead</button>
+        <div id="resultBox"></div>
+    </section>
+
+    <section class="panel">
+        <h2>Lead Pipeline</h2>
+        {% for lead in leads %}
+        <div class="lead priority-{{ lead.priority|lower }}">
+            <div>
+                <h3>{{ lead.company }} <span>{{ lead.score }}/100 · {{ lead.priority }}</span></h3>
+                <p>{{ lead.industry }} | {{ lead.city }}, {{ lead.state }} | {{ lead.source }}</p>
+                <p><b>Signal:</b> {{ lead.signal_text }}</p>
+                <p><b>Pain:</b> {{ lead.pain_summary }}</p>
+                <p><b>Pitch:</b> {{ lead.recommended_pitch }}</p>
+                <p><b>Solution:</b> {{ lead.recommended_solution }}</p>
+                <p><b>ROI Estimate:</b> ${{ "{:,.0f}".format(lead.projected_monthly_recovered or 0) }}/month recoverable revenue</p>
+                <button onclick="draftOutreach('{{ lead.lead_id }}')">Draft Email/SMS</button>
+                <button onclick="sendSMS('{{ lead.lead_id }}')">Send SMS if Twilio Configured</button>
             </div>
+        </div>
+        {% endfor %}
+    </section>
 
-            <div class="card">
-                <h3>High Priority</h3>
-                <p class="metric">{{ leads|selectattr("priority", "equalto", "High")|list|length }}</p>
-            </div>
-
-            <div class="card">
-                <h3>Core Offer</h3>
-                <p>Identify revenue leaks and automate them.</p>
-            </div>
-        </section>
-
-        <section class="panel">
-            <h2>Add / Score Lead</h2>
-
-            <div class="form-grid">
-                <input id="company" placeholder="Company">
-                <input id="industry" placeholder="Industry e.g. HVAC, Plumbing, Electrical">
-                <input id="contact_name" placeholder="Contact Name">
-                <input id="phone" placeholder="Phone">
-                <input id="email" placeholder="Email">
-                <input id="website" placeholder="Website">
-                <input id="city" placeholder="City">
-                <input id="state" placeholder="State">
-                <input id="source" placeholder="Signal Source">
-            </div>
-
-            <textarea id="signal_text" placeholder="Paste signal: job post, review complaint, website weakness, hiring post, missed-call complaint..."></textarea>
-
-            <button onclick="addLead()">Save & Score Lead</button>
-
-            <div id="resultBox"></div>
-        </section>
-
-        <section class="panel">
-            <h2>Lead Pipeline</h2>
-
-            {% for lead in leads %}
-            <div class="lead-row priority-{{ lead.priority|lower }}">
-                <div>
-                    <h3>{{ lead.company }}</h3>
-                    <p>{{ lead.industry }} | {{ lead.city }}, {{ lead.state }} | {{ lead.source }}</p>
-                    <p>{{ lead.signal_text }}</p>
-                    <p><strong>Pain:</strong> {{ lead.pain_summary }}</p>
-                    <p><strong>Pitch:</strong> {{ lead.recommended_pitch }}</p>
-                    <p><strong>Solution:</strong> {{ lead.recommended_solution }}</p>
-                </div>
-
-                <div class="score-box">
-                    <span>{{ lead.score }}</span>
-                    <small>{{ lead.priority }}</small>
-                </div>
-            </div>
-            {% endfor %}
-        </section>
-
-        <section class="panel">
-            <h2>Recent Activity</h2>
-
-            {% for item in activities %}
-            <div class="activity">
-                <strong>{{ item.event_type }}</strong>
-                <p>{{ item.details }}</p>
-            </div>
-            {% endfor %}
-        </section>
-    </main>
+    <section class="panel">
+        <h2>Recent Outreach Drafts</h2>
+        {% for item in outreach %}
+        <div class="activity">
+            <b>{{ item.channel|upper }} · {{ item.status }}</b>
+            <pre>{{ item.message }}</pre>
+        </div>
+        {% endfor %}
+    </section>
+</main>
 
 <script>
-function addLead() {
+function val(id){ return document.getElementById(id).value; }
+
+function addLead(){
     const payload = {
-        company: document.getElementById("company").value,
-        industry: document.getElementById("industry").value,
-        contact_name: document.getElementById("contact_name").value,
-        phone: document.getElementById("phone").value,
-        email: document.getElementById("email").value,
-        website: document.getElementById("website").value,
-        city: document.getElementById("city").value,
-        state: document.getElementById("state").value,
-        source: document.getElementById("source").value,
-        signal_text: document.getElementById("signal_text").value
+        company: val("company"),
+        industry: val("industry"),
+        contact_name: val("contact_name"),
+        phone: val("phone"),
+        email: val("email"),
+        website: val("website"),
+        city: val("city"),
+        state: val("state"),
+        source: val("source"),
+        signal_text: val("signal_text"),
+        estimated_job_value: val("estimated_job_value"),
+        missed_leads_per_month: val("missed_leads_per_month"),
+        close_rate: val("close_rate") || 0.25
     };
 
     fetch("/api/add-lead", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)
     })
-    .then(res => res.json())
-    .then(data => {
-        document.getElementById("resultBox").innerHTML = 
-            <h3>Status: \</h3>
-            <p><strong>Score:</strong> \</p>
-            <p><strong>Priority:</strong> \</p>
-            <p><strong>Pain:</strong> \</p>
-            <p><strong>Pitch:</strong> \</p>
-            <p><strong>Solution:</strong> \</p>
-        ;
-
-        setTimeout(() => location.reload(), 1400);
+    .then(r=>r.json())
+    .then(data=>{
+        document.getElementById("resultBox").innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        setTimeout(()=>location.reload(), 1200);
     });
+}
+
+function draftOutreach(id){
+    fetch(`/api/outreach/${id}`, {method:"POST"})
+    .then(r=>r.json())
+    .then(data=>{
+        alert("Outreach drafted. Scroll to Recent Outreach Drafts.");
+        location.reload();
+    });
+}
+
+function sendSMS(id){
+    fetch(`/api/send-sms/${id}`, {method:"POST"})
+    .then(r=>r.json())
+    .then(data=>alert(JSON.stringify(data, null, 2)));
 }
 </script>
 </body>
