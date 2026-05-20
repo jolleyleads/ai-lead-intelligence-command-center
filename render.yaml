@@ -1,6 +1,6 @@
 ﻿services:
   - type: web
-    name: contractor-ai-command-center
+    name: ai-lead-intelligence-command-center
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
