@@ -82,10 +82,11 @@
             <p><b>Next Best Action:</b> {{ lead.next_best_action }}</p>
             <p><b>Projected Recoverable Revenue:</b> ${{ "{:,.0f}".format(lead.projected_monthly_recovered or 0) }}/month</p>
 
-            <button onclick="draftOutreach('{{ lead.lead_id }}')">Draft Email/SMS</button>
-            <button onclick="gmailDraft('{{ lead.lead_id }}')">Generate Gmail Draft</button>
-            <button onclick="syncSheets('{{ lead.lead_id }}')">Sync Payload to Sheets/Make</button>
-            <button onclick="regenSummary('{{ lead.lead_id }}')">Regenerate AI Summary</button>
+            <button onclick="draftOutreach('{{ lead.lead_id }}')">Draft Email + SMS</button>
+<button onclick="gmailDraft('{{ lead.lead_id }}')">Create Gmail Draft</button>
+<button onclick="syncSheets('{{ lead.lead_id }}')">Sync to Google Sheets / Make</button>
+<button onclick="sendSMS('{{ lead.lead_id }}')">Send SMS / Save SMS Draft</button>
+<button onclick="regenSummary('{{ lead.lead_id }}')">Regenerate AI Summary</button>
         </div>
         {% endfor %}
     </section>
@@ -160,8 +161,22 @@ function syncSheets(id){
     fetch(`/api/sheets-sync/${id}`, {method:"POST"})
     .then(r=>r.json())
     .then(data=>{
-        alert("Sheets/Make payload ready.");
-        console.log(data);
+        alert("Lead payload synced or prepared for Google Sheets / Make.com.");
+        console.log("Sheets/Make response:", data);
+    });
+}
+
+function sendSMS(id){
+    fetch(`/api/send-sms/${id}`, {method:"POST"})
+    .then(r=>r.json())
+    .then(data=>{
+        if(data.sent){
+            alert("SMS sent successfully.");
+        } else {
+            alert("SMS was not sent because Twilio is not configured. SMS draft was saved instead.");
+        }
+        console.log("SMS response:", data);
+        location.reload();
     });
 }
 
@@ -176,3 +191,4 @@ function regenSummary(id){
 </script>
 </body>
 </html>
+
